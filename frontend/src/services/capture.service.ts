@@ -10,6 +10,7 @@ export interface Capture {
   confidence?: number;
   status: 'pending' | 'processed' | 'failed';
   metadata: Record<string, any>;
+  bird_detections?: BirdDetection[];
 }
 
 export interface BirdDetection {
@@ -89,21 +90,64 @@ export const captureService = {
   },
 
   async getCaptures(userId: string, page = 1, limit = 10): Promise<{ data: Capture[]; count: number }> {
+    console.log('Buscando capturas com parâmetros:', { userId, page, limit });
+    
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
-    const { data, error, count } = await supabase
-      .from('captures')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    try {
+      // Verificar sessão atual
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('Sem sessão ativa');
+      }
 
-    if (error) {
-      throw new Error('Erro ao buscar capturas: ' + error.message);
+      const { data, error, count } = await supabase
+        .from('captures')
+        .select(`
+          *,
+          bird_detections (
+            id,
+            species_name,
+            confidence,
+            bounding_box,
+            created_at,
+            metadata
+          )
+        `, { count: 'exact' })
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+
+      if (error) {
+        console.error('Erro na query do Supabase:', error);
+        throw new Error('Erro ao buscar capturas: ' + error.message);
+      }
+
+      if (!data) {
+        console.log('Nenhum dado encontrado');
+        return { data: [], count: 0 };
+      }
+
+      console.log(`Encontradas ${data.length} capturas`);
+      
+      const captures = data.map(capture => {
+        const firstDetection = capture.bird_detections?.[0];
+        return {
+          ...capture,
+          metadata: {
+            ...capture.metadata,
+            species: firstDetection?.species_name || capture.metadata?.species || 'Espécie não identificada',
+            confidence: firstDetection?.confidence || capture.metadata?.confidence || 0,
+          }
+        };
+      });
+
+      return { data: captures, count: count || 0 };
+    } catch (error) {
+      console.error('Erro ao buscar capturas:', error);
+      throw error;
     }
-
-    return { data: data || [], count: count || 0 };
   },
 
   async getDetections(captureId: string): Promise<BirdDetection[]> {
@@ -131,95 +175,171 @@ export const captureService = {
     }
   },
 
-  async getUserStats(userId: string) {
-    const { data, error } = await supabase
-      .rpc('get_user_detection_stats', { user_id: userId });
+  async getUserStats(userId: string): Promise<{
+    total_captures: number;
+    total_species: number;
+    avg_confidence: number;
+    last_capture_date: string;
+  } | null> {
+    console.log('Buscando estatísticas do usuário:', userId);
+    
+    try {
+      const { data, error } = await supabase
+        .rpc('get_user_detection_stats', { user_id: userId });
 
-    if (error) {
-      throw new Error('Erro ao buscar estatísticas: ' + error.message);
+      if (error) {
+        console.error('Erro ao buscar estatísticas:', error);
+        throw new Error('Erro ao buscar estatísticas: ' + error.message);
+      }
+
+      console.log('Estatísticas carregadas:', data);
+      return data;
+    } catch (error) {
+      console.error('Erro ao processar estatísticas:', error);
+      throw error;
     }
-
-    return data;
   },
 
   async getRecentCaptures(userId: string, limit = 5): Promise<Capture[]> {
-    const { data, error } = await supabase
-      .from('captures')
-      .select(`
-        *,
-        bird_detections (
-          species_name,
-          confidence
-        )
-      `)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    console.log('Buscando capturas recentes:', { userId, limit });
 
-    if (error) {
-      throw new Error('Erro ao buscar capturas recentes: ' + error.message);
+    try {
+      // Verificar sessão atual
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.error('Sem sessão ativa ao buscar capturas recentes');
+        throw new Error('Sem sessão ativa');
+      }
+
+      const { data, error } = await supabase
+        .from('captures')
+        .select(`
+          *,
+          bird_detections (
+            id,
+            species_name,
+            confidence,
+            bounding_box,
+            created_at,
+            metadata
+          )
+        `)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        console.error('Erro na query de capturas recentes:', error);
+        throw new Error('Erro ao buscar capturas recentes: ' + error.message);
+      }
+
+      if (!data) {
+        console.log('Nenhuma captura recente encontrada');
+        return [];
+      }
+
+      console.log(`Encontradas ${data.length} capturas recentes`);
+      
+      return data.map(capture => ({
+        ...capture,
+        metadata: {
+          ...capture.metadata,
+          species: capture.bird_detections?.[0]?.species_name || capture.metadata?.species || 'Espécie não identificada',
+          confidence: capture.bird_detections?.[0]?.confidence || capture.metadata?.confidence || 0,
+        }
+      }));
+    } catch (error) {
+      console.error('Erro ao buscar capturas recentes:', error);
+      throw error;
     }
-
-    return data || [];
   },
 
   async getDailyStats(userId: string, days = 7): Promise<{ date: string; count: number }[]> {
-    const { data, error } = await supabase
-      .from('captures')
-      .select('created_at')
-      .eq('user_id', userId)
-      .gte('created_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
+    console.log('Buscando estatísticas diárias:', { userId, days });
+    
+    try {
+      const endDate = new Date();
+      const startDate = new Date(endDate);
+      startDate.setDate(startDate.getDate() - days);
+      
+      const { data, error } = await supabase
+        .from('captures')
+        .select('created_at')
+        .eq('user_id', userId)
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', endDate.toISOString());
 
-    if (error) {
-      throw new Error('Erro ao buscar estatísticas diárias: ' + error.message);
+      if (error) {
+        console.error('Erro ao buscar estatísticas diárias:', error);
+        throw new Error('Erro ao buscar estatísticas diárias: ' + error.message);
+      }
+
+      // Agrupar capturas por dia
+      const dailyStats = (data || []).reduce((acc, capture) => {
+        const date = new Date(capture.created_at).toISOString().split('T')[0];
+        acc[date] = (acc[date] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      // Preencher todos os dias no intervalo
+      const result = [];
+      for (let i = 0; i < days; i++) {
+        const currentDate = new Date(endDate);
+        currentDate.setDate(currentDate.getDate() - i);
+        const dateString = currentDate.toISOString().split('T')[0];
+        result.unshift({
+          date: dateString,
+          count: dailyStats[dateString] || 0
+        });
+      }
+
+      console.log('Estatísticas diárias processadas:', result);
+      return result;
+    } catch (error) {
+      console.error('Erro ao processar estatísticas diárias:', error);
+      throw error;
     }
-
-    const dailyStats = (data || []).reduce((acc, capture) => {
-      const date = new Date(capture.created_at).toISOString().split('T')[0];
-      acc[date] = (acc[date] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    // Preencher dias sem capturas com 0
-    const result = [];
-    for (let i = 0; i < days; i++) {
-      const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      result.unshift({
-        date,
-        count: dailyStats[date] || 0
-      });
-    }
-
-    return result;
   },
-
   async getTopSpecies(userId: string, limit = 5): Promise<{ species: string; count: number }[]> {
-    const { data, error } = await supabase
-      .from('captures')
-      .select(`
-        id,
-        bird_detections (
-          species_name
-        )
-      `)
-      .eq('user_id', userId);
+    console.log('Buscando top espécies:', { userId, limit });
+    
+    try {
+      const { data, error } = await supabase
+        .from('captures')
+        .select(`
+          id,
+          bird_detections (
+            species_name
+          )
+        `)
+        .eq('user_id', userId);
 
-    if (error) {
-      throw new Error('Erro ao buscar espécies mais comuns: ' + error.message);
+      if (error) {
+        console.error('Erro ao buscar espécies mais comuns:', error);
+        throw new Error('Erro ao buscar espécies mais comuns: ' + error.message);
+      }
+
+      // Contar ocorrências de cada espécie
+      const speciesCounts = (data || []).reduce((acc, capture) => {
+        (capture.bird_detections || []).forEach((detection: any) => {
+          if (detection.species_name) {
+            acc[detection.species_name] = (acc[detection.species_name] || 0) + 1;
+          }
+        });
+        return acc;
+      }, {} as Record<string, number>);
+
+      // Ordenar e limitar resultados
+      const result = Object.entries(speciesCounts)
+        .map(([species, count]) => ({ species, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, limit);
+
+      console.log('Top espécies processadas:', result);
+      return result;
+    } catch (error) {
+      console.error('Erro ao processar top espécies:', error);
+      throw error;
     }
-
-    const speciesCounts = (data || []).reduce((acc, capture) => {
-      (capture.bird_detections || []).forEach((detection: any) => {
-        if (detection.species_name) {
-          acc[detection.species_name] = (acc[detection.species_name] || 0) + 1;
-        }
-      });
-      return acc;
-    }, {} as Record<string, number>);
-
-    return Object.entries(speciesCounts)
-      .map(([species, count]) => ({ species, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, limit);
   }
 };

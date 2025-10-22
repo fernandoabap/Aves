@@ -7,9 +7,6 @@ import { useAuth } from "@/contexts/auth.context";
 import { captureService, Capture } from "@/services/capture.service";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import birdSample1 from "@/assets/bird-sample-1.jpg.ts";
-import birdSample2 from "@/assets/bird-sample-2.jpg.ts";
-import birdSample3 from "@/assets/bird-sample-3.jpg.ts";
 
 const Dashboard = () => {
   const { user } = useAuth();
@@ -26,23 +23,48 @@ const Dashboard = () => {
 
   useEffect(() => {
     const loadDashboardData = async () => {
-      if (!user) return;
+      if (!user) {
+        console.log("Usuário não autenticado");
+        return;
+      }
 
       try {
         setLoading(true);
+        console.log("Carregando dados do dashboard para o usuário:", user.id);
         
         // Carregar todos os dados em paralelo
-        const [captures, daily, species, stats] = await Promise.all([
-          captureService.getRecentCaptures(user.id),
+        const [
+          capturesResult,
+          dailyStatsResult,
+          topSpeciesResult,
+          userStatsResult
+        ] = await Promise.all([
+          captureService.getCaptures(user.id, 1, 5),
           captureService.getDailyStats(user.id),
           captureService.getTopSpecies(user.id),
           captureService.getUserStats(user.id)
         ]);
 
-        setRecentCaptures(captures);
-        setDailyStats(daily);
-        setTopSpecies(species);
-        setUserStats(stats);
+        console.log("Dados carregados:", {
+          captures: capturesResult.data.length,
+          daily: dailyStatsResult.length,
+          species: topSpeciesResult.length,
+          stats: userStatsResult
+        });
+        
+        setRecentCaptures(capturesResult.data);
+        setDailyStats(dailyStatsResult);
+        setTopSpecies(topSpeciesResult);
+        
+        if (userStatsResult) {
+          setUserStats({
+            total_captures: Number(userStatsResult.total_captures),
+            total_species: Number(userStatsResult.total_species),
+            avg_confidence: Number(userStatsResult.avg_confidence || 0) * 100, // Convertendo para porcentagem
+            last_capture_date: userStatsResult.last_capture_date
+          });
+        }
+        
       } catch (error) {
         console.error('Erro ao carregar dados do dashboard:', error);
       } finally {
@@ -72,7 +94,7 @@ const Dashboard = () => {
       icon: Camera,
       label: "Total de Capturas",
       value: userStats?.total_captures?.toString() || "0",
-      change: dailyStats[dailyStats.length - 1]?.count + " hoje",
+      change: `${dailyStats[dailyStats.length - 1]?.count || 0} hoje`,
       color: "text-accent",
     },
     {
@@ -107,7 +129,7 @@ const Dashboard = () => {
                 <CardContent>
                   <div className="text-3xl font-bold">{stat.value}</div>
                   <p className="text-sm text-muted-foreground mt-1">
-                    <span className="text-primary font-medium">{stat.change}</span> desde ontem
+                    <span className="text-primary font-medium">{stat.change}</span>
                   </p>
                 </CardContent>
               </Card>
@@ -148,6 +170,7 @@ const Dashboard = () => {
                 ) : (
                   recentCaptures.map((capture) => {
                     const detection = capture.bird_detections?.[0];
+                    const confidence = detection?.confidence || capture.metadata?.confidence || 0;
                     return (
                       <div
                         key={capture.id}
@@ -168,19 +191,17 @@ const Dashboard = () => {
                               addSuffix: true
                             })}
                           </p>
-                          {detection && (
-                            <div className="flex items-center gap-1 mt-1">
-                              <div className="h-1.5 rounded-full bg-muted w-full overflow-hidden">
-                                <div
-                                  className="h-full bg-gradient-nature"
-                                  style={{ width: `${detection.confidence}%` }}
-                                ></div>
-                              </div>
-                              <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                {Math.round(detection.confidence)}%
-                              </span>
+                          <div className="flex items-center gap-1 mt-1">
+                            <div className="h-1.5 rounded-full bg-muted w-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-nature"
+                                style={{ width: `${confidence * 100}%` }}
+                              ></div>
                             </div>
-                          )}
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {Math.round(confidence * 100)}%
+                            </span>
+                          </div>
                         </div>
                       </div>
                     );
@@ -197,18 +218,51 @@ const Dashboard = () => {
             <CardTitle>Galeria - Últimas Capturas</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-              {[birdSample1, birdSample2, birdSample3, birdSample1, birdSample2, birdSample3].map(
-                (img, index) => (
-                  <div
-                    key={index}
-                    className="aspect-square rounded-lg overflow-hidden hover:scale-105 transition-transform cursor-pointer shadow-soft"
-                  >
-                    <img src={img} alt={`Bird ${index + 1}`} className="w-full h-full object-cover" />
-                  </div>
-                )
-              )}
-            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : recentCaptures.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                Nenhuma captura disponível
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                {recentCaptures.map((capture) => {
+                  const detection = capture.bird_detections?.[0];
+                  const confidence = detection?.confidence || capture.metadata?.confidence || 0;
+                  return (
+                    <div
+                      key={capture.id}
+                      className="group aspect-square rounded-lg overflow-hidden hover:scale-105 transition-transform cursor-pointer shadow-soft relative"
+                    >
+                      <img
+                        src={capture.image_url}
+                        alt={detection?.species_name || "Ave capturada"}
+                        className="w-full h-full object-cover"
+                      />
+                      {/* Overlay com informações */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-3 flex flex-col justify-end">
+                        <p className="text-white text-sm font-medium truncate">
+                          {detection?.species_name || "Espécie não identificada"}
+                        </p>
+                        <div className="flex items-center gap-1 mt-1">
+                          <div className="h-1 rounded-full bg-white/20 w-full">
+                            <div
+                              className="h-full bg-white"
+                              style={{ width: `${confidence * 100}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-xs text-white">
+                            {Math.round(confidence * 100)}%
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
