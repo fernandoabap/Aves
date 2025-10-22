@@ -125,54 +125,85 @@ export function useBirdDetection() {
       
       // Fazer a predição
       const outputs = await session.run({ images: inputTensor });
-      const predictions = outputs['output0'].data as Float32Array;
+      const predictions = outputs['output0'];
       
-      // No YOLOv8, o output é um tensor 2D onde cada linha representa uma detecção
-      // e as colunas são [x, y, w, h, conf, class_scores...]
-      const rowLength = predictions.length / (predictions as any).dims[0];
-      const numDetections = (predictions as any).dims[0];
-      const numClasses = rowLength - 5;  // 4 para bbox + 1 para conf + classes
-      const detections: YOLOPrediction[] = [];
-      
-      for (let i = 0; i < numDetections; i++) {
-        const offset = i * rowLength;
-        const confidence = predictions[offset + 4];
-        
-        if (confidence > 0.5) {  // Limiar de confiança
-          const bbox = [
-            predictions[offset],     // x
-            predictions[offset + 1], // y
-            predictions[offset + 2], // w
-            predictions[offset + 3]  // h
-          ];
-          
-          // Pegar as probabilidades de classe
-          const classScores = Array.from(predictions.slice(offset + 5, offset + 5 + numClasses));
-          const classIndex = classScores.indexOf(Math.max(...classScores));
-          
-          detections.push({
-            label: classIndex,
-            confidence: confidence,
-            bbox: bbox
-          });
-        }
+      if (!predictions || !predictions.data || !predictions.dims) {
+        console.warn('Formato de saída inválido do modelo');
+        return null;
       }
       
-      // Pegar a melhor detecção de ave
-      const bestDetection = detections[0];  // Assumindo que as classes são ordenadas por confiança
+      const data = predictions.data as Float32Array;
+      const dims = predictions.dims;
       
-      if (bestDetection) {
-        const [x, y, w, h] = bestDetection.bbox;
-        return {
-          species: 'Ave',  // Você pode mapear o label para nomes específicos de aves
-          confidence: bestDetection.confidence,
-          bbox: {
-            x: x * video.videoWidth,
-            y: y * video.videoHeight,
-            width: w * video.videoWidth,
-            height: h * video.videoHeight
+      console.log('Output dims:', dims);
+      console.log('Output data length:', data.length);
+      
+      // YOLOv8 geralmente retorna [1, 84, 8400] ou [1, num_classes+4, num_detections]
+      // onde 84 = 4 (bbox) + 80 (classes COCO)
+      
+      // Se o formato for [1, 84, 8400], precisamos transpor
+      if (dims.length === 3 && dims[1] > dims[2]) {
+        const numBoxes = dims[2];
+        const numAttrs = dims[1];
+        
+        const detections: YOLOPrediction[] = [];
+        
+        // Iterar sobre cada box
+        for (let i = 0; i < numBoxes; i++) {
+          // Pegar as coordenadas da bbox (primeiros 4 valores)
+          const x = data[i];
+          const y = data[numBoxes + i];
+          const w = data[2 * numBoxes + i];
+          const h = data[3 * numBoxes + i];
+          
+          // Pegar as probabilidades de classe (do índice 4 em diante)
+          const classScores: number[] = [];
+          let maxScore = 0;
+          let maxIndex = 0;
+          
+          for (let j = 4; j < numAttrs; j++) {
+            const score = data[j * numBoxes + i];
+            classScores.push(score);
+            if (score > maxScore) {
+              maxScore = score;
+              maxIndex = j - 4;
+            }
           }
-        };
+          
+          // Filtrar por confiança
+          if (maxScore > 0.5) {
+            detections.push({
+              label: maxIndex,
+              confidence: maxScore,
+              bbox: [x, y, w, h]
+            });
+          }
+        }
+        
+        // Ordenar por confiança
+        detections.sort((a, b) => b.confidence - a.confidence);
+        
+        // Pegar a melhor detecção
+        const bestDetection = detections[0];
+        
+        if (bestDetection) {
+          const [x, y, w, h] = bestDetection.bbox;
+          
+          // Converter de coordenadas normalizadas para pixels
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
+          
+          return {
+            species: 'Ave',
+            confidence: bestDetection.confidence,
+            bbox: {
+              x: (x - w / 2) * videoWidth / canvas.width,
+              y: (y - h / 2) * videoHeight / canvas.height,
+              width: w * videoWidth / canvas.width,
+              height: h * videoHeight / canvas.height
+            }
+          };
+        }
       }
 
       return null;

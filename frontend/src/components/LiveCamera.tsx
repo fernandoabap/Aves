@@ -57,11 +57,21 @@ const LiveCamera = () => {
           video.srcObject = mediaStream;
           
           // Garantir que o vídeo comece a reproduzir
-          video.onloadedmetadata = () => {
-            video.play().catch(err => {
-              console.error('Erro ao reproduzir vídeo:', err);
-            });
-          };
+          try {
+            await video.play();
+            console.log('Vídeo iniciado com sucesso');
+          } catch (err) {
+            console.error('Erro ao reproduzir vídeo:', err);
+            // Tentar novamente após carregar metadados
+            video.onloadedmetadata = async () => {
+              try {
+                await video.play();
+                console.log('Vídeo iniciado após loadedmetadata');
+              } catch (playErr) {
+                console.error('Erro ao reproduzir após metadata:', playErr);
+              }
+            };
+          }
         }
 
         setStream(mediaStream);
