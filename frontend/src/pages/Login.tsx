@@ -1,46 +1,75 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Bird } from "lucide-react";
-import { toast } from "sonner";
+import { useToast } from "@/components/ui/use-toast";
 import heroBg from "@/assets/hero-bg.jpg.ts";
 import { authService } from "@/services/auth.service";
 import { useAuth } from "@/contexts/auth.context";
+import { supabase } from "@/services/supabase";
 import { Separator } from "@/components/ui/separator";
 
 const Login = () => {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
+  const [formState, setFormState] = useState({
+    email: "",
+    password: "",
+    isLoading: false,
+    showPassword: false
+  });
   const navigate = useNavigate();
+  const toast = useToast();
+  const { signIn, user, loading: authLoading } = useAuth();
 
-  const { signIn } = useAuth();
+  const { email, password, isLoading, showPassword } = formState;
+
+  const updateFormState = (field: string, value: string | boolean) => {
+    setFormState(prev => ({ ...prev, [field]: value }));
+  };
+
+  useEffect(() => {
+    // Se o usuário já estiver autenticado e não estiver carregando, redireciona para o dashboard
+    if (user && !authLoading) {
+      navigate('/dashboard');
+    }
+  }, [user, authLoading, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!email || !password) {
-      toast.error("Por favor, preencha todos os campos");
-      return;
-    }
-
     try {
-      setIsLoading(true);
+      updateFormState('isLoading', true);
+
+      // Validação prévia com feedback imediato
+      if (!email || !password) {
+        toast.error("Por favor, preencha todos os campos");
+        return;
+      }
+
+      if (!email.includes('@')) {
+        toast.error("Por favor, insira um email válido");
+        return;
+      }
+
       const response = await authService.login({ email, password });
       
       // Atualiza o contexto de autenticação
       signIn(response.token, response.user);
       
       toast.success("Login realizado com sucesso!");
+
+      // Navega para o dashboard
       navigate("/dashboard");
     } catch (error: any) {
-      toast.error(error.response?.data?.message || "Erro ao fazer login. Tente novamente.");
+      const errorMessage = error.message?.includes('Invalid login') 
+        ? "Email ou senha incorretos"
+        : error.message || "Erro ao fazer login. Tente novamente.";
+      
+      toast.error(errorMessage);
     } finally {
-      setIsLoading(false);
+      updateFormState('isLoading', false);
     }
   };
 
@@ -48,14 +77,14 @@ const Login = () => {
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
       {/* Background image with overlay */}
       <div 
-        className="absolute inset-0 bg-cover bg-center"
+        className="absolute inset-0 bg-cover bg-center -z-10"
         style={{ backgroundImage: `url(${heroBg})` }}
       >
         <div className="absolute inset-0 bg-gradient-to-br from-primary/90 via-primary/70 to-secondary/80"></div>
       </div>
 
       {/* Login card */}
-      <Card className="relative w-full max-w-md mx-4 shadow-large animate-fade-in">
+      <Card className="relative w-full max-w-md mx-4 shadow-large animate-fade-in z-10">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
             <div className="rounded-full bg-gradient-nature p-3">
@@ -76,8 +105,9 @@ const Login = () => {
                 type="email"
                 placeholder="seu@email.com"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => updateFormState('email', e.target.value)}
                 required
+                disabled={isLoading}
               />
             </div>
             <div className="space-y-2">
@@ -87,6 +117,7 @@ const Login = () => {
                   type="button"
                   onClick={() => navigate("/forgot-password")}
                   className="text-sm text-muted-foreground hover:text-primary"
+                  disabled={isLoading}
                 >
                   Esqueceu a senha?
                 </button>
@@ -97,13 +128,15 @@ const Login = () => {
                   type={showPassword ? "text" : "password"}
                   placeholder="••••••••"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => updateFormState('password', e.target.value)}
                   required
+                  disabled={isLoading}
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
+                  onClick={() => updateFormState('showPassword', !showPassword)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                  disabled={isLoading}
                 >
                   {showPassword ? "Ocultar" : "Mostrar"}
                 </button>
