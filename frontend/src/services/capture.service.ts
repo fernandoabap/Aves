@@ -60,7 +60,7 @@ export const captureService = {
       .insert({
         user_id: userId,
         image_url: imageUrl,
-        status: 'pending',
+        status: 'processed',
         metadata: {
           original_name: file.name,
           size: file.size,
@@ -164,14 +164,55 @@ export const captureService = {
     return data || [];
   },
 
-  async deleteCapture(captureId: string): Promise<void> {
-    const { error } = await supabase
-      .from('captures')
-      .delete()
-      .eq('id', captureId);
+  async deleteCapture(captureId: string, userId: string): Promise<void> {
+    try {
+      // Primeiro, buscar a URL da imagem para deletar do storage
+      const { data: capture, error: fetchError } = await supabase
+        .from('captures')
+        .select('image_url')
+        .eq('id', captureId)
+        .eq('user_id', userId)
+        .single();
 
-    if (error) {
-      throw new Error('Erro ao deletar captura: ' + error.message);
+      if (fetchError) {
+        throw new Error('Erro ao buscar captura: ' + fetchError.message);
+      }
+
+      if (!capture) {
+        throw new Error('Captura não encontrada');
+      }
+
+      // Extrair o caminho do arquivo da URL
+      const imageUrl = capture.image_url;
+      const urlParts = imageUrl.split('/');
+      const bucketIndex = urlParts.findIndex(part => part === 'bird-images');
+      if (bucketIndex !== -1) {
+        const filePath = urlParts.slice(bucketIndex + 1).join('/');
+        
+        // Deletar a imagem do storage
+        const { error: storageError } = await supabase.storage
+          .from('bird-images')
+          .remove([filePath]);
+
+        if (storageError) {
+          console.error('Erro ao deletar imagem do storage:', storageError);
+          // Continua mesmo se falhar ao deletar do storage
+        }
+      }
+
+      // Deletar o registro do banco (as detecções serão deletadas em cascata)
+      const { error: deleteError } = await supabase
+        .from('captures')
+        .delete()
+        .eq('id', captureId)
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        throw new Error('Erro ao deletar captura: ' + deleteError.message);
+      }
+    } catch (error) {
+      console.error('Erro ao deletar captura:', error);
+      throw error;
     }
   },
 

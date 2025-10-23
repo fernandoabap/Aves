@@ -112,12 +112,15 @@ export function useBirdDetection() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       
-      // Converter para tensor do ONNX Runtime
+      // Converter para tensor do ONNX Runtime no formato CHW (Channel, Height, Width)
+      // YOLOv8 espera: todos os valores R, depois todos os G, depois todos os B
       const input = new Float32Array(canvas.width * canvas.height * 3);
-      for (let i = 0; i < imageData.data.length / 4; i++) {
-        input[i * 3] = imageData.data[i * 4] / 255.0;
-        input[i * 3 + 1] = imageData.data[i * 4 + 1] / 255.0;
-        input[i * 3 + 2] = imageData.data[i * 4 + 2] / 255.0;
+      const pixelCount = canvas.width * canvas.height;
+      
+      for (let i = 0; i < pixelCount; i++) {
+        input[i] = imageData.data[i * 4] / 255.0; // R
+        input[pixelCount + i] = imageData.data[i * 4 + 1] / 255.0; // G
+        input[pixelCount * 2 + i] = imageData.data[i * 4 + 2] / 255.0; // B
       }
       
       // Criar tensor de entrada
@@ -141,12 +144,15 @@ export function useBirdDetection() {
       // YOLOv8 geralmente retorna [1, 84, 8400] ou [1, num_classes+4, num_detections]
       // onde 84 = 4 (bbox) + 80 (classes COCO)
       
-      // Se o formato for [1, 84, 8400], precisamos transpor
-      if (dims.length === 3 && dims[1] > dims[2]) {
+      // Se o formato for [1, 84, 8400], processar diretamente
+      if (dims.length === 3 && dims[0] === 1) {
         const numBoxes = dims[2];
         const numAttrs = dims[1];
         
+        console.log('🔍 Processando detecções... numBoxes:', numBoxes, 'numAttrs:', numAttrs);
+        
         const detections: YOLOPrediction[] = [];
+        let maxScoreFound = 0;
         
         // Iterar sobre cada box
         for (let i = 0; i < numBoxes; i++) {
@@ -170,8 +176,13 @@ export function useBirdDetection() {
             }
           }
           
-          // Filtrar por confiança
-          if (maxScore > 0.5) {
+          // Rastrear o maior score encontrado
+          if (maxScore > maxScoreFound) {
+            maxScoreFound = maxScore;
+          }
+          
+          // Filtrar por confiança (threshold reduzido para debug)
+          if (maxScore > 0.25) {
             detections.push({
               label: maxIndex,
               confidence: maxScore,
@@ -180,6 +191,9 @@ export function useBirdDetection() {
           }
         }
         
+        console.log('📊 Maior confiança encontrada:', maxScoreFound.toFixed(3));
+        console.log('📦 Detecções encontradas (>0.25):', detections.length);
+        
         // Ordenar por confiança
         detections.sort((a, b) => b.confidence - a.confidence);
         
@@ -187,6 +201,12 @@ export function useBirdDetection() {
         const bestDetection = detections[0];
         
         if (bestDetection) {
+          console.log('✅ Melhor detecção:', {
+            label: bestDetection.label,
+            confidence: bestDetection.confidence,
+            bbox: bestDetection.bbox
+          });
+          
           const [x, y, w, h] = bestDetection.bbox;
           
           // Converter de coordenadas normalizadas para pixels
@@ -194,7 +214,7 @@ export function useBirdDetection() {
           const videoHeight = video.videoHeight;
           
           return {
-            species: 'Ave',
+            species: `Ave detectada (${(bestDetection.confidence * 100).toFixed(0)}%)`,
             confidence: bestDetection.confidence,
             bbox: {
               x: (x - w / 2) * videoWidth / canvas.width,
@@ -203,6 +223,8 @@ export function useBirdDetection() {
               height: h * videoHeight / canvas.height
             }
           };
+        } else {
+          console.log('❌ Nenhuma detecção com confiança suficiente');
         }
       }
 
